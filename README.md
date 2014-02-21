@@ -1,6 +1,6 @@
 PyStrains
 =========
-<<<<<<< HEAD
+
 What?
 -----
 PyStrains is a simple lightweight strains library manager for research labs.
@@ -23,7 +23,3 @@ How?
 Who?
 ----
 PyStrains is an open-source project coded by a microbiology PhD student on its (rare) spare time.
-=======
-
-Strains library manager for labs
->>>>>>> a3b1bcd45f89242815b5b12b1fd9ddc2f21683c9
