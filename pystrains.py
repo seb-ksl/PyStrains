@@ -17,31 +17,14 @@
 #  
 #  You should have received a copy of the GNU General Public License
 #  along with this program; if not, see <http://www.gnu.org/licenses/>.
-#  
 #
-
-# FixMe: Import : réguler erreur (XLRDError) si fichier pas format Excel (xlrd plante)
-# ToDo: gestion des utilisateurs avec des droits
-# ToDo: fusion Create de FirstRun et DB ?
-# ToDo: when a strain is copied, add as a note "strain copied from strain #"
-
-# ToDo: créer une classe pour instancier des objets récurrents : les boutons "send" et "reset"
-# ToDo: cacher dossier bak
-# ToDo: Import : au moment du clic sur OK, créer 2 threads : un progress et un qui importe réellement. Celui qui importe fait appel au thread progress
-# ToDo: log des actions sur la DB, auquel seul admin a accès
-# ToDo: Auto-complétion dans NewEditEntry avec source = treeview
-# ToDo: tooltip header mode
-# ToDo: export CSV
-# ToDo: en import header mode, ignorer l'ordre des colonnes, se servir du header (lire le header, déterminer l'ordre des colonnes, et ensuite retrier chaque row selon cet ordre)
-# ToDo: couleurs en fonction de l'espèce (réglable dans futures versions ?)
-# FixMe: après erreur, le filechooserdialog ne fonctionne plus. Réguler avec try ?
 
 import sys                                          # Various system related methods
 # Add the PyStrains lib directory to the system path,
 # so the next imports will look for modules in this directory as well.
 sys.path.append('/usr/lib/pystrains')
 from gi.repository import Gtk                       # User interface
-from hashlib import sha256
+from hashlib import sha256                          # SHA encryption
 from xlrd import open_workbook, xldate_as_tuple     # Read data in Excel format
 import os                                           # Various system related methods
 import datetime                                     # Used here to get today's date
@@ -51,20 +34,23 @@ import shutil                                       # High-level file management
 
 class Glob(object):
     
-    headers = [('Index', 'i'),('Experimentator','s'),('Box','i'),('Tube','i'),('Strain','s'),('Genome','s'),('Plasmid','s'),('Antibiotics','s'),('Date','s'),('Notes','s'),('Sequenced','i')]
+    headers = [('Index', 'i'),('Experimentator','s'),('Box','i'),('Tube','i'),('Strain','s'),('Genome','s'),
+               ('Plasmid','s'),('Antibiotics','s'),('Date','s'),('Notes','s'),('Sequenced','i')]
     dbfile = ""
     bakpath = ""
     bakname = str(datetime.date.today())
     write_permission = 0
-    number_of_tables = 3        # Used when db validity is checked. Current 2 tables are "strains" and "who_is_where".
+    number_of_tables = 3
     isadmin = False
 
     @staticmethod
     def set_var(var, var_value):
-        if var == "dbfile": Glob.dbfile = var_value
-        if var == "bakpath": Glob.bakpath = var_value
-        if var == "bakname": Glob.bakname = var_value
-        print("DB File=",Glob.dbfile)
+        if var == "dbfile":
+            Glob.dbfile = var_value
+        if var == "bakpath":
+            Glob.bakpath = var_value
+        if var == "bakname":
+            Glob.bakname = var_value
         f = open(".pystrains.conf","w")
         f.write(Glob.dbfile)
         f.close()
@@ -80,6 +66,8 @@ class Glob(object):
 
     @staticmethod
     def encrypt(plain):
+        # Encode plain first because sha256 takes byte strings and not unicode strings.
+        plain = plain.encode()
         return sha256(plain).hexdigest()
 
 
@@ -87,7 +75,7 @@ class DB(object):
     def __init__(self):
         try:
             f = open(Glob.dbfile)
-        except:
+        except FileNotFoundError:
             self.error = True
             Error(None, "Database file could not be found.")
         else:
@@ -100,13 +88,18 @@ class DB(object):
                 self.conn.close()
                 Error(None, "Database file is not valid.")
 
+    def close(self):
+        self.cur.close()
+        self.conn.close()
+
     def connect(self):
         self.conn = sqlite3.connect(Glob.dbfile)
         self.cur = self.conn.cursor()
 
     def db_is_valid(self):
         try:
-            self.cur.execute("SELECT * FROM SQLITE_MASTER")     # SQLITE_MASTER is a master table that lists all tables and their characteristics
+            # SQLITE_MASTER is a master table that lists all tables and their characteristics
+            self.cur.execute("SELECT * FROM SQLITE_MASTER")
         except:
             return False
         else:
@@ -122,10 +115,12 @@ class DB(object):
     @staticmethod
     def test_write():
         try:
-            f = open(Glob.dbfile,"a")    # Try to open the DB in "append" mode (DO NOT TRY WRITE MODE: that would clear DB file, of course).
+            # Try to open the DB in "append" mode (DO NOT TRY WRITE MODE: that would clear DB file, of course).
+            f = open(Glob.dbfile,"a")
         except:
             Glob.write_permission = 0
-            Error(None,"Database could not be opened in write-mode\nPlease make sure that you are allowed to write in file\n"+Glob.dbfile+".")
+            Error(None,"Database could not be opened in write-mode\nPlease make sure that you are allowed to write in "
+                       "file\n" + Glob.dbfile + ".")
         else:
             Glob.write_permission = 1
             
@@ -133,7 +128,8 @@ class DB(object):
         print("Creating new DB at:",newdbfile + ".")
         Glob.dbfile = newdbfile
         self.connect()
-        request = "CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER, STRAIN TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT, Sequenced INTEGER)"
+        request = "CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER," \
+                  "STRAIN TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT, Sequenced INTEGER)"
         self.cur.execute(request)
         request = "CREATE TABLE who_is_where (Who TEXT, IsWhere TEXT)"
         self.cur.execute(request)
@@ -167,15 +163,21 @@ class DB(object):
             return min_[0][0]
         
     def insert(self,strainnumber,data):
-        if data[0] != "" and data[1] != "" and data[2] != "":    # Keep this check for imported data, checks that there is at least "experimentator", "box", "tube".
+        # Keep this check for imported data, checks that there is at least "experimentator", "box", "tube".
+        if data[0] != "" and data[1] != "" and data[2] != "":
             try:
-                request = 'INSERT INTO strains VALUES({0},"{1[0]}",{1[1]},{1[2]},"{1[3]}","{1[4]}","{1[5]}","{1[6]}","{1[7]}","{1[8]}","{1[9]}")'
-                self.cur.execute(request.format(strainnumber,data))        # Format the request inserting 1)an index superior to last item and 2)all the data entered in the creation form
+                request = 'INSERT INTO strains VALUES({0},"{1[0]}",{1[1]},{1[2]},"{1[3]}","{1[4]}","{1[5]}","{1[6]}",' \
+                          '"{1[7]}","{1[8]}","{1[9]}")'
+                # Format the request inserting
+                # 1)an index superior to last item and
+                # 2)all the data entered in the creation form
+                self.cur.execute(request.format(strainnumber,data))
                 self.conn.commit()
             except:
                 print("Insertion error:\nThis row could not be inserted:\n",data)
         else:
-            print("Insertion error:\nThis row could not be inserted because mandatory fields were not filled up:\n",data)
+            print("Insertion error:\nThis row could not be inserted because mandatory fields were not filled up:\n",
+                  data)
     
     def insert_whowhere(self,who,where):
         try:
@@ -186,7 +188,9 @@ class DB(object):
             print('Insertion error:\nThis row could not be inserted:',who,";",where)
     
     def edit(self,rowtoedit,data):
-        request = 'UPDATE strains SET Experimentator="{0[0]}", Box="{0[1]}", Tube="{0[2]}", Strain="{0[3]}", Genome="{0[4]}", Plasmid="{0[5]}",Antibiotics="{0[6]}", Date="{0[7]}", Notes="{0[8]}", Sequenced={0[9]} WHERE StrainNumber={1}'
+        request = 'UPDATE strains SET Experimentator="{0[0]}", Box="{0[1]}", Tube="{0[2]}", Strain="{0[3]}",' \
+                  'Genome="{0[4]}", Plasmid="{0[5]}",Antibiotics="{0[6]}", Date="{0[7]}", Notes="{0[8]}",' \
+                  'Sequenced={0[9]} WHERE StrainNumber={1}'
         self.cur.execute(request.format(data,rowtoedit))
         self.conn.commit()
         
@@ -201,16 +205,24 @@ class DB(object):
         self.conn.commit()
 
     def quick_filter(self, data):
-
         if len(data) > 0:
-
+            request = ""
             for word in data:
                 i = data.index(word)
 
-                if i == 0 :
-                    request = "SELECT * FROM strains WHERE (LOWER(Experimentator) LIKE LOWER('%{0[0]}%') OR LOWER(Box) LIKE LOWER('%{0[0]}%') OR LOWER(Tube) LIKE LOWER('%{0[0]}%') OR LOWER(Strain) LIKE LOWER('%{0[0]}%') OR LOWER(Genome) LIKE LOWER('%{0[0]}%') OR LOWER(Plasmid) LIKE LOWER('%{0[0]}%') OR LOWER(Antibiotics) LIKE LOWER('%{0[0]}%') OR LOWER(Date) LIKE LOWER('%{0[0]}%') OR LOWER(Notes) LIKE LOWER('%{0[0]}%') OR LOWER(Sequenced) LIKE LOWER('%{0[0]}%'))"
+                if i == 0:
+                    request = "SELECT * FROM strains WHERE (LOWER(Experimentator) LIKE LOWER('%{0[0]}%') OR" \
+                              "LOWER(Box) LIKE LOWER('%{0[0]}%') OR LOWER(Tube) LIKE LOWER('%{0[0]}%') OR" \
+                              "LOWER(Strain) LIKE LOWER('%{0[0]}%') OR LOWER(Genome) LIKE LOWER('%{0[0]}%')OR" \
+                              "LOWER(Plasmid) LIKE LOWER('%{0[0]}%') OR LOWER(Antibiotics) LIKE LOWER('%{0[0]}%') OR" \
+                              "LOWER(Date) LIKE LOWER('%{0[0]}%') OR LOWER(Notes) LIKE LOWER('%{0[0]}%') OR" \
+                              "LOWER(Sequenced) LIKE LOWER('%{0[0]}%'))"
                 else:
-                    requestadd = "AND (LOWER(Experimentator) LIKE LOWER('%{0}%') OR LOWER(Box) LIKE LOWER('%{0}%') OR LOWER(Tube) LIKE LOWER('%{0}%') OR LOWER(Strain) LIKE LOWER('%{0}%') OR LOWER(Genome) LIKE LOWER('%{0}%') OR LOWER(Plasmid) LIKE LOWER('%{0}%') OR LOWER(Antibiotics) LIKE LOWER('%{0}%') OR LOWER(Date) LIKE LOWER('%{0}%') OR LOWER(Notes) LIKE LOWER('%{0}%') OR LOWER(Sequenced) LIKE LOWER('%{0}%'))"
+                    requestadd = "AND (LOWER(Experimentator) LIKE LOWER('%{0}%') OR LOWER(Box) LIKE LOWER('%{0}%') OR" \
+                                 "LOWER(Tube) LIKE LOWER('%{0}%') OR LOWER(Strain) LIKE LOWER('%{0}%') OR" \
+                                 "LOWER(Genome) LIKE LOWER('%{0}%') OR LOWER(Plasmid) LIKE LOWER('%{0}%') OR" \
+                                 "LOWER(Antibiotics) LIKE LOWER('%{0}%') OR LOWER(Date) LIKE LOWER('%{0}%') OR" \
+                                 "LOWER(Notes) LIKE LOWER('%{0}%') OR LOWER(Sequenced) LIKE LOWER('%{0}%'))"
                     requestadd = requestadd.format("{0[" + str(i) + "]}")
                     request += requestadd
 
@@ -257,9 +269,18 @@ class AskAdmin(Gtk.Window):
         grid.attach_next_to(button_cancel, button_ok, Gtk.PositionType.RIGHT, 1, 1)
 
     def ok(self, *args):
-        if True:
+        self.db = DB()
+        admin_password = ""
+        users_list = self.db.read_users()
+        for user in users_list:
+            if user[0] == 'admin':
+                admin_password = user[2]
+        if Glob.encrypt(self.entry_pwd.get_text()) == admin_password:
             Glob.isadmin = True
-        self.quit()
+            Error(None, "Ok, you are now admin!")
+            self.quit()
+        else:
+            Error(None, "Invalid admin password.")
 
     def on_key_press(self,widget,event):
         if event.keyval == 65293 or event.keyval == 65421:
@@ -268,6 +289,7 @@ class AskAdmin(Gtk.Window):
             self.quit(self)
 
     def quit(self, *args):
+        self.db.close()
         self.hide()
 
 
@@ -329,7 +351,8 @@ class StrainBook(Gtk.Window):
             try:
                 os.mkdir(Glob.bakpath)
             except:
-                Error(self, "Could not create backup folder on server.\nPlease check that you are allowed to write in\n" + Glob.bakpath + ".")
+                Error(self, "Could not create backup folder on server.\nPlease check that you are allowed to write in"
+                            "\n" + Glob.bakpath + ".")
         
         ### If there is more than 20 backups, remove the oldest one before backing up
         ls = os.listdir(Glob.bakpath)
@@ -338,22 +361,28 @@ class StrainBook(Gtk.Window):
             try:
                 os.remove(os.path.join(Glob.bakpath,ls[0]))
             except:
-                print("Could not remove old database file.\nPlease check that you are allowed to write in\n"+Glob.bakpath+".")
+                print("Could not remove old database file.\nPlease check that you are allowed to write in"
+                      "\n" + Glob.bakpath + ".")
         
         try:
             shutil.copy2(Glob.dbfile,os.path.join(Glob.bakpath,Glob.bakname))
         except:
-            Error(self,"Could not backup database.\nPlease check that you are allowed to write in\n"+Glob.bakpath+".")
+            Error(self,"Could not backup database.\nPlease check that you are allowed to write in\n"
+                       + Glob.bakpath + ".")
         else:
             return 1
     
     def restore(self,menu):
-        dialog_open = Gtk.FileChooserDialog("Please choose a database file",self,Gtk.FileChooserAction.OPEN,(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+        dialog_open = Gtk.FileChooserDialog("Please choose a database file",self,Gtk.FileChooserAction.OPEN,
+                                            (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,Gtk.STOCK_OPEN,
+                                             Gtk.ResponseType.OK))
         dialog_open.set_current_folder(Glob.bakpath)
         
         choice = dialog_open.run()
         if choice == Gtk.ResponseType.OK:
-            dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,Gtk.ButtonsType.YES_NO,"Are you sure you want to restore database from backup?\nBackup date is: " + dialog_open.get_filename().split("/")[-1])
+            dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,
+                                            Gtk.ButtonsType.YES_NO,"Are you sure you want to restore database from "
+                                            "backup?\nBackup date is: " + dialog_open.get_filename().split("/")[-1])
             choice_sure = dialog_sure.run()
             if choice_sure == Gtk.ResponseType.YES:
                 shutil.copy2(dialog_open.get_filename(),Glob.dbfile)
@@ -548,7 +577,9 @@ class StrainBook(Gtk.Window):
     
     def on_treeview_click(self,widget=None,event=None):
         if event.button == 3:
-            path = self.treeview.get_path_at_pos(event.x,event.y)    # Determines what row is under the cursor. path[0] is the row number, path[1] is the column, path[3] is cell(x) and path[4] is cell(y)
+            # Determines what row is under the cursor. path[0] is the row number, path[1] is the column,
+            # path[3] is cell(x) and path[4] is cell(y)
+            path = self.treeview.get_path_at_pos(event.x,event.y)
             if path is not None:
                 self.treeview.grab_focus()    # Sets keyboard focus to treeview
                 self.treeview.set_cursor(path[0],path[1],0)    # Sets keyboard focus to the right row and column
@@ -562,16 +593,19 @@ class StrainBook(Gtk.Window):
             self.unfullscreen()
         
     def new_db(self,parent):
-        dialog_save = Gtk.FileChooserDialog("Create new database", self,Gtk.FileChooserAction.SAVE,(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,Gtk.STOCK_SAVE, Gtk.ResponseType.OK),do_overwrite_confirmation=True)
+        dialog_save = Gtk.FileChooserDialog("Create new database", self,Gtk.FileChooserAction.SAVE,(Gtk.STOCK_CANCEL,
+                                            Gtk.ResponseType.CANCEL,Gtk.STOCK_SAVE, Gtk.ResponseType.OK),
+                                            do_overwrite_confirmation=True)
         dialog_save.set_create_folders(True)
         choice = dialog_save.run()
         if choice == Gtk.ResponseType.OK:
             newdbfile = dialog_save.get_filename()
-            if newdbfile[-3:] != 'sq3': newdbfile = newdbfile + '.sq3'
+            if newdbfile[-3:] != 'sq3': newdbfile += '.sq3'
             try:
                 self.db.create(newdbfile)
             except:
-                Error(self,"Could not create new database file. Check that you are allowed to write in\n"+os.path.dirname(newdbfile)+".")
+                Error(self,"Could not create new database file. Check that you are allowed to write in\n"
+                           + os.path.dirname(newdbfile) + ".")
             else:
                 dialog_save.destroy()
                 self.refresh()
@@ -652,7 +686,9 @@ class StrainBook(Gtk.Window):
             self.spinner.start()
             model,row = self.treeview.get_selection().get_selected()
             if row is not None:
-                dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,Gtk.ButtonsType.YES_NO,"Are you sure you want to delete entry n°"+str(model[row][0])+"?")
+                dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,
+                                                Gtk.ButtonsType.YES_NO,"Are you sure you want to delete entry n°"
+                                                + str(model[row][0]) + "?")
                 choice_sure = dialog_sure.run()
                 if choice_sure == Gtk.ResponseType.YES:
                     self.db.del_(model[row][0])
@@ -702,7 +738,13 @@ class StrainBook(Gtk.Window):
         about.set_version('1.0')
         about.set_authors(['Sébastien GÉLIS'])
         about.set_copyright('(c)2013-2014 Sébastien GÉLIS')
-        about.set_license('This program is free software: you can redistribute it and/or modify\nit under the terms of the GNU General Public License as published by\nthe Free Software Foundation, either version 3 of the License, or\n(at your option) any later version.\n\nThis program is distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\nGNU General Public License for more details.\n\nYou should have received a copy of the GNU General Public License\nalong with this program. If not, see http://www.gnu.org/licenses/.')
+        about.set_license('This program is free software: you can redistribute it and/or modify\nit under the terms of '
+                          'the GNU General Public License as published by\nthe Free Software Foundation, either '
+                          'version 3 of the License, or\n(at your option) any later version.\n\nThis program is '
+                          'distributed in the hope that it will be useful,\nbut WITHOUT ANY WARRANTY; without even the '
+                          'implied warranty of\nMERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\nGNU '
+                          'General Public License for more details.\n\nYou should have received a copy of the GNU '
+                          'General Public License\nalong with this program. If not, see http://www.gnu.org/licenses/.')
         about.set_comments('PyStrains is a simple lightweight strains library\nmanager for research labs.')
         about.set_website("http://www.gelis.ch/pystrains")
         #~ about.set_logo(gtk.gdk.pixbuf_new_from_file("battery.png"))
@@ -781,15 +823,18 @@ class UsersList(Gtk.Window):
                 self.liststore.append(row)
 
     def on_create_click(self, *args):
-        askadmin = AskAdmin(self)
-        askadmin.show_all()
-        print(Glob.isadmin)
+        if Glob.isadmin:
+            print("OK, you are admin!")
+        else:
+            askadmin = AskAdmin(self)
+            askadmin.show_all()
 
     def on_treeview_click(self, widget=None, event=None):
         pass
 
     def on_key_press(self,widget,event):
-        if event.keyval == 65307:self.quit(self)
+        if event.keyval == 65307:
+            self.quit(self)
 
     def quit(self, *args):
         self.hide()
@@ -859,7 +904,9 @@ class WhoIsWhere(Gtk.Window):
     
     def on_treeview_click(self,widget=None,event=None):
         if event.button == 3:
-            path = self.treeview.get_path_at_pos(event.x,event.y)    # Determines what row is under the cursor. path[0] is the row number, path[1] is the column, path[3] is cell(x) and path[4] is cell(y)
+            # Determines what row is under the cursor. path[0] is the row number, path[1] is the column,
+            # path[3] is cell(x) and path[4] is cell(y)
+            path = self.treeview.get_path_at_pos(event.x,event.y)
             if path is not None:
                 self.treeview.grab_focus()    # Sets keyboard focus to treeview
                 self.treeview.set_cursor(path[0],path[1],0)    # Sets keyboard focus to the right row and column
@@ -869,7 +916,9 @@ class WhoIsWhere(Gtk.Window):
     def del_entry(self,parent):
         model,row = self.treeview.get_selection().get_selected()
         if row is not None:
-            dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,Gtk.ButtonsType.YES_NO,"Are you sure you want to delete the entry "+'"'+str(model[row][0])+'"'+"?")
+            dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,
+                                            Gtk.ButtonsType.YES_NO,"Are you sure you want to delete the entry "
+                                            + '"' + str(model[row][0]) + '"' + "?")
             choice_sure = dialog_sure.run()
             if choice_sure == Gtk.ResponseType.YES:
                 self.parent.db.del_whowhere(model[row][1])
@@ -883,10 +932,12 @@ class WhoIsWhere(Gtk.Window):
     def refresh(self):
         self.liststore.clear()
         if not self.parent.db.error:
-            for row in self.parent.db.read_who_where(): self.liststore.append(row)
+            for row in self.parent.db.read_who_where():
+                self.liststore.append(row)
     
     def on_key_press(self,widget,event):
-        if event.keyval == 65307:self.quit(self)
+        if event.keyval == 65307:
+            self.quit(self)
 
     def quit(self, *args):
         self.hide()
@@ -1008,18 +1059,24 @@ class NewEditEntry(Gtk.Window):
             if model[row][10] == "": self.seq_na.set_active(True)
             if model[row][10] == "Passed": self.seq_ok.set_active(True)
             if model[row][10] == "Failed": self.seq_fail.set_active(True)
-        
-        button_cancel.grab_focus()    # Otherwise self.entry_who gets the focus when window opens, and the placeholder text disappears
-        self.active_entry = self.entry_who    # Initializes the variable to first entry
+
+        # Otherwise self.entry_who gets the focus when window opens, and the placeholder text disappears
+        button_cancel.grab_focus()
+        # Initializes the variable to first entry
+        self.active_entry = self.entry_who
     
     def on_focus(self,widget,signal):
         self.active_entry = widget
             
     def insert_char(self,specchar):
-        if specchar == "delta": self.active_entry.set_text(self.active_entry.get_text()+chr(916))
-        if specchar == "omega": self.active_entry.set_text(self.active_entry.get_text()+chr(937))
-        if specchar == "alpha": self.active_entry.set_text(self.active_entry.get_text()+chr(945))
-        if specchar == "lambda": self.active_entry.set_text(self.active_entry.get_text()+chr(955))
+        if specchar == "delta":
+            self.active_entry.set_text(self.active_entry.get_text() + chr(916))
+        if specchar == "omega":
+            self.active_entry.set_text(self.active_entry.get_text() + chr(937))
+        if specchar == "alpha":
+            self.active_entry.set_text(self.active_entry.get_text() + chr(945))
+        if specchar == "lambda":
+            self.active_entry.set_text(self.active_entry.get_text() + chr(955))
         self.active_entry.grab_focus()
     
     def sendto_create(self,parent):
@@ -1035,11 +1092,17 @@ class NewEditEntry(Gtk.Window):
                 if '_' not in self.entry_who.get_text() and '_' not in self.entry_date.get_text() and '_' not in self.entry_box.get_text() and '_' not in self.entry_tube.get_text() and '_' not in self.entry_strain.get_text() and '_' not in self.entry_genome.get_text() and '_' not in self.entry_plasmid.get_text() and '_' not in self.entry_ab.get_text() and '_' not in self.entry_notes.get_text():
                     if self.entry_who.get_text() != '' and self.entry_box.get_text() != '' and self.entry_tube.get_text() != '':
                         ### Get sequencing status and store it in seq
-                        if self.seq_na.get_active(): seq = 0
-                        if self.seq_ok.get_active(): seq = 1
-                        if self.seq_fail.get_active(): seq = -1
+                        seq = 0
+                        if self.seq_na.get_active():
+                            seq = 0
+                        if self.seq_ok.get_active():
+                            seq = 1
+                        if self.seq_fail.get_active():
+                            seq = -1
                         ### Build data tuple and send it to create
-                        data = (self.entry_who.get_text(),int(self.entry_box.get_text()),int(self.entry_tube.get_text()),self.entry_strain.get_text(),self.entry_genome.get_text(),self.entry_plasmid.get_text(),self.entry_ab.get_text(),self.entry_date.get_text(),self.entry_notes.get_text(), seq)
+                        data = (self.entry_who.get_text(),int(self.entry_box.get_text()),int(self.entry_tube.get_text())
+                                ,self.entry_strain.get_text(),self.entry_genome.get_text(),self.entry_plasmid.get_text()
+                                ,self.entry_ab.get_text(),self.entry_date.get_text(),self.entry_notes.get_text(), seq)
                         self.parent.create(data)
                         self.quit()
                     else:
@@ -1050,7 +1113,6 @@ class NewEditEntry(Gtk.Window):
                 Error(self, 'Character % not allowed')
     
     def sendto_edit(self, parent):
-                
         try:
             tmp = int(self.entry_box.get_text())
             tmp = int(self.entry_tube.get_text())
@@ -1061,11 +1123,17 @@ class NewEditEntry(Gtk.Window):
             if '%' not in self.entry_who.get_text() and '%' not in self.entry_date.get_text() and '%' not in self.entry_box.get_text() and '%' not in self.entry_tube.get_text() and '%' not in self.entry_strain.get_text() and '%' not in self.entry_genome.get_text() and '%' not in self.entry_plasmid.get_text() and '%' not in self.entry_ab.get_text() and '%' not in self.entry_notes.get_text():
                 if '_' not in self.entry_who.get_text() and '_' not in self.entry_date.get_text() and '_' not in self.entry_box.get_text() and '_' not in self.entry_tube.get_text() and '_' not in self.entry_strain.get_text() and '_' not in self.entry_genome.get_text() and '_' not in self.entry_plasmid.get_text() and '_' not in self.entry_ab.get_text() and '_' not in self.entry_notes.get_text():
                     ### Get sequencing status and store it in seq
-                    if self.seq_na.get_active(): seq = 0
-                    if self.seq_ok.get_active(): seq = 1
-                    if self.seq_fail.get_active(): seq = -1
+                    seq = 0
+                    if self.seq_na.get_active():
+                        seq = 0
+                    if self.seq_ok.get_active():
+                        seq = 1
+                    if self.seq_fail.get_active():
+                        seq = -1
                     ### Build data tuple and send it to edit
-                    data = (self.entry_who.get_text(),int(self.entry_box.get_text()),int(self.entry_tube.get_text()),self.entry_strain.get_text(),self.entry_genome.get_text(),self.entry_plasmid.get_text(),self.entry_ab.get_text(),self.entry_date.get_text(),self.entry_notes.get_text(),seq)
+                    data = (self.entry_who.get_text(),int(self.entry_box.get_text()),int(self.entry_tube.get_text()),
+                            self.entry_strain.get_text(),self.entry_genome.get_text(),self.entry_plasmid.get_text(),
+                            self.entry_ab.get_text(),self.entry_date.get_text(),self.entry_notes.get_text(),seq)
                     self.parent.edit_entry(self.rowtoedit,data)
                     self.quit()
                 else:
@@ -1195,9 +1263,11 @@ class Filter(Gtk.Window):
         self.entry_notes.connect('icon-press',self.sendto_filter_single)
         
         button_reset = Gtk.Button(self,stock='gtk-cancel',use_underline=True)
-        button_reset.label = button_reset.get_children()[0]                                # These three lines
-        button_reset.label=button_reset.label.get_children()[0].get_children()[1]        # are a dumb trick to make a stock button
-        button_reset.label=button_reset.label.set_label('_Reset')                        # with a custom label
+        # The next 3 lines are a dumb trick to make a stock button with a custom label
+        button_reset.label = button_reset.get_children()[0]
+        button_reset.label=button_reset.label.get_children()[0].get_children()[1]
+        button_reset.label=button_reset.label.set_label('_Reset')
+        #
         button_reset.connect('clicked',self.reset)
         
         button_send = Gtk.Button(self,stock='gtk-find',use_underline=True)
@@ -1220,8 +1290,9 @@ class Filter(Gtk.Window):
         grid.attach_next_to(button_send,button_reset,Gtk.PositionType.RIGHT,1,1)
         
         grid.attach_next_to(label_hint,button_reset,Gtk.PositionType.BOTTOM,2,2)
-        
-        button_reset.grab_focus()    # Otherwise self.entry_who gets the focus when window opens, and the placeholder text disappears
+
+        # Otherwise self.entry_who gets the focus when window opens, and the placeholder text disappears
+        button_reset.grab_focus()
         
     def on_key_press(self,widget,event):
         if event.keyval == 65293 or event.keyval == 65421:
@@ -1300,7 +1371,8 @@ class Import(Gtk.Window):
         emptylabel2 = Gtk.Label("")
         
         label_format = Gtk.Label("\nPlease note that your Excel file should be formatted as follows:\n")
-        label_format2 = Gtk.Label("\nBetween stars: minimal required fields\nSequencing results: 0 if none, 1 if passed, -1 if failed")
+        label_format2 = Gtk.Label("\nBetween stars: minimal required fields\nSequencing results: 0 if none, "
+                                  "1 if passed, -1 if failed")
         label_format.set_alignment(0,1)
         label_format2.set_alignment(0,1)
         liststore = Gtk.ListStore(str, str, str, str, str, str, str, str, str, str)
@@ -1337,7 +1409,9 @@ class Import(Gtk.Window):
             self.headermode = False
         
     def show_open(self,widget=None):
-        dialog_open = Gtk.FileChooserDialog("Please choose an Excel file", self,Gtk.FileChooserAction.OPEN,(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+        dialog_open = Gtk.FileChooserDialog("Please choose an Excel file", self,Gtk.FileChooserAction.OPEN,
+                                            (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,Gtk.STOCK_OPEN,
+                                             Gtk.ResponseType.OK))
         choice = dialog_open.run()
         if choice == Gtk.ResponseType.OK:
             self.xlfile_entry.set_text(dialog_open.get_filename())
@@ -1356,13 +1430,20 @@ class Import(Gtk.Window):
                     
                     for row in range(sheet.nrows):
                         listrow = []
-                        if self.headermode and row==0:continue        # If user specified there is a header in the table, do not consider first row
+                        if self.headermode and row == 0:
+                            # If user specified there is a header in the table, do not consider first row
+                            continue
                         
                         for col in range(sheet.ncols):
                             cell = sheet.cell(row,col).value
-                            if type(cell) == float: cell = int(cell)    # If cell contains a number, it will be imported as a float. This line converts it to int.
-                            if sheet.cell_type(row,col) == 3:            # If cell type is "date"
-                                date_tuple = xldate_as_tuple(cell,f.datemode)[:3]    # Read the cell as a date and return a tuple containing (year,month,day,hour,minute,second)
+                            # If cell contains a number, it will be imported as a float. This line converts it to int.
+                            if type(cell) == float:
+                                cell = int(cell)
+                            # If cell type is "date"
+                            if sheet.cell_type(row,col) == 3:
+                                # Read the cell as a date and return a tuple containing
+                                # (year,month,day,hour,minute,second)
+                                date_tuple = xldate_as_tuple(cell,f.datemode)[:3]
                                 cell = str(date_tuple[0])+"-"+str(date_tuple[1])+"-"+str(date_tuple[2])
                             listrow.append(str(cell))
                         importlist.append(listrow)
@@ -1406,7 +1487,9 @@ class Settings(Gtk.Window):
         grid.attach_next_to(button_ok,button_open,Gtk.PositionType.BOTTOM,1,1)
         
     def show_open(self,widget=None):
-        dialog_open = Gtk.FileChooserDialog("Please choose a database file",self,Gtk.FileChooserAction.OPEN,(Gtk.STOCK_CANCEL,Gtk.ResponseType.CANCEL,Gtk.STOCK_OPEN,Gtk.ResponseType.OK))
+        dialog_open = Gtk.FileChooserDialog("Please choose a database file",self,Gtk.FileChooserAction.OPEN,
+                                            (Gtk.STOCK_CANCEL,Gtk.ResponseType.CANCEL,Gtk.STOCK_OPEN,
+                                             Gtk.ResponseType.OK))
 
         filter_sq3 = Gtk.FileFilter()
         filter_sq3.set_name("SQLite 3 databases")
@@ -1480,7 +1563,9 @@ class DelBatch(Gtk.Window):
             Error(self,'Please enter valid numbers')
         else:
             if 0 < delfrom <= delto and delfrom >= self.min and delto <= self.max:
-                dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,Gtk.ButtonsType.YES_NO,"Are you sure you want to delete entries n°" + str(delfrom) + " to " + str(delto) + "?")
+                dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,
+                                                Gtk.ButtonsType.YES_NO,"Are you sure you want to delete entries n°"
+                                                + str(delfrom) + " to " + str(delto) + "?")
                 choice_sure = dialog_sure.run()
                 if choice_sure == Gtk.ResponseType.YES:
                     self.parent.del_batch(list(range(delfrom,delto + 1)))
@@ -1501,7 +1586,8 @@ class DelBatch(Gtk.Window):
 
 class Error(Gtk.MessageDialog):
     def __init__(self,parent,text):
-        Gtk.MessageDialog.__init__(self,parent,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.WARNING,Gtk.ButtonsType.CLOSE,text)
+        Gtk.MessageDialog.__init__(self,parent,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.WARNING,
+                                   Gtk.ButtonsType.CLOSE,text)
         self.run()
         self.destroy()
 
@@ -1526,7 +1612,9 @@ class FirstRun(Gtk.Window):
         grid.attach_next_to(label,button_create,Gtk.PositionType.TOP,2,1)
         
     def create(self,widget):
-        dialog_save = Gtk.FileChooserDialog("Create new database", self,Gtk.FileChooserAction.SAVE,(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,Gtk.STOCK_SAVE, Gtk.ResponseType.OK),do_overwrite_confirmation=True)
+        dialog_save = Gtk.FileChooserDialog("Create new database", self,Gtk.FileChooserAction.SAVE,(Gtk.STOCK_CANCEL,
+                                            Gtk.ResponseType.CANCEL,Gtk.STOCK_SAVE, Gtk.ResponseType.OK),
+                                            do_overwrite_confirmation=True)
         dialog_save.set_create_folders(True)
         choice = dialog_save.run()
         if choice == Gtk.ResponseType.OK:
@@ -1537,24 +1625,38 @@ class FirstRun(Gtk.Window):
 
             Glob.set_var('dbfile',newdbfile)
             
-            conn = sqlite3.connect(newdbfile)
-            cur = conn.cursor()
+            self.conn = sqlite3.connect(newdbfile)
+            self.cur = self.conn.cursor()
             
-            request = 'CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER, STRAIN TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT, Sequenced INTEGER)'
-            cur.execute(request)
+            request = 'CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER,' \
+                      'STRAIN TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT' \
+                      'Sequenced INTEGER)'
+            self.cur.execute(request)
             request = 'CREATE TABLE who_is_where (Who TEXT, IsWhere TEXT)'
-            cur.execute(request)
+            self.cur.execute(request)
             request = 'CREATE TABLE users (user TEXT, rights TEXT, pwd TEXT)'
-            cur.execute(request)
-
-            cur.close()
-            conn.close()
-            self.restart()
+            self.cur.execute(request)
+            self.conn.commit()
+            self.new_admin()
         elif choice == Gtk.ResponseType.CANCEL:
             dialog_save.destroy()
 
+    def new_admin(self):
+        new_admin_win = AdminPassword(self)
+        new_admin_win.show_all()
+
+    def set_admin_password(self, password):
+        password = Glob.encrypt(password)
+        self.cur.execute('INSERT INTO users VALUES("admin","all","' + password + '")')
+        self.conn.commit()
+        self.cur.close()
+        self.conn.close()
+        self.restart()
+
     def set(self,widget):
-        dialog_open = Gtk.FileChooserDialog("Please choose a database file", self,Gtk.FileChooserAction.OPEN,(Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
+        dialog_open = Gtk.FileChooserDialog("Please choose a database file", self,Gtk.FileChooserAction.OPEN,
+                                            (Gtk.STOCK_CANCEL, Gtk.ResponseType.CANCEL,
+                                             Gtk.STOCK_OPEN, Gtk.ResponseType.OK))
 
         filter_sq3 = Gtk.FileFilter()
         filter_sq3.set_name("SQLite 3 databases")
@@ -1579,11 +1681,54 @@ class FirstRun(Gtk.Window):
         os.execl(sys.executable, sys.executable, * sys.argv)
     
     def on_key_press(self,widget,event):
-        if event.keyval == 65307:self.quit()
+        if event.keyval == 65307:
+            self.quit()
 
     @staticmethod
     def quit(*args):
-        Gtk.main_quit()    
+        Gtk.main_quit()
+
+
+class AdminPassword(Gtk.Window):
+    def __init__(self, parent):
+        Gtk.Window.__init__(self, title="Admin password")
+        self.parent = parent
+        self.connect("key-press-event",self.on_key_press)
+        self.set_resizable(False)
+        self.set_default_size(200, 200)
+
+        grid = Gtk.Grid()
+        grid.set_column_homogeneous(True)
+        self.add(grid)
+        self.set_position(Gtk.WindowPosition.CENTER)
+
+        self.entry_pwd = Gtk.Entry(visibility=False)
+        self.entry_pwd2 = Gtk.Entry(visibility=False)
+
+        button_ok = Gtk.Button(self,stock='gtk-ok')
+        button_ok.connect('clicked',self.ok)
+        button_cancel = Gtk.Button(self,stock='gtk-cancel')
+        button_cancel.connect('clicked',self.quit)
+
+        grid.add(self.entry_pwd)
+        grid.attach_next_to(self.entry_pwd2, self.entry_pwd, Gtk.PositionType.BOTTOM, 1, 1)
+        grid.attach_next_to(button_ok, self.entry_pwd, Gtk.PositionType.RIGHT, 1, 1)
+        grid.attach_next_to(button_cancel, self.entry_pwd2, Gtk.PositionType.RIGHT, 1, 1)
+
+    def ok(self, widget):
+        if self.entry_pwd.get_text() == self.entry_pwd2.get_text():
+            self.parent.set_admin_password(self.entry_pwd.get_text())
+            self.quit()
+        else:
+            print("Passwords differ")
+
+    def on_key_press(self,widget,event):
+        if event.keyval == 65307:
+            self.quit()
+
+    @staticmethod
+    def quit(*args):
+        Gtk.main_quit()
 
 
 def main():
