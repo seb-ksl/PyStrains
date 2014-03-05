@@ -19,6 +19,11 @@
 #  along with this program; if not, see <http://www.gnu.org/licenses/>.
 #
 
+# ToDo: change rights for a given user (edit user)
+# ToDo: forbid actions to unallowed users (apply rights policies)
+# ToDo: when strain created or imported, ask what experimentator among users in rights list (eg: if Leyla
+# creates/imports a strain, ask if she does it as Leyla or as Seb)
+
 import sys                                          # Various system related methods
 # Add the PyStrains lib directory to the system path,
 # so the next imports will look for modules in this directory as well.
@@ -41,7 +46,7 @@ class Glob(object):
     bakname = str(datetime.date.today())
     write_permission = 0
     number_of_tables = 3
-    isadmin = False
+    user = ""
 
     @staticmethod
     def set_var(var, var_value):
@@ -128,8 +133,8 @@ class DB(object):
         print("Creating new DB at:",newdbfile + ".")
         Glob.dbfile = newdbfile
         self.connect()
-        request = "CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER," \
-                  "STRAIN TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT, Sequenced INTEGER)"
+        request = "CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER, " \
+                  "Strain TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT, Sequenced INTEGER)"
         self.cur.execute(request)
         request = "CREATE TABLE who_is_where (Who TEXT, IsWhere TEXT)"
         self.cur.execute(request)
@@ -186,7 +191,14 @@ class DB(object):
             self.conn.commit()
         except:
             print('Insertion error:\nThis row could not be inserted:',who,";",where)
-    
+
+    def insert_user(self, data):
+        # request = 'INSERT INTO users VALUES("' + self.entry_user.get_text() + '","' + self.entry_rights.get_text()\
+        # + '","' + self.entry_password.get_text() + '")'
+        request = 'INSERT INTO users VALUES("{0[0]}","{0[1]}","{0[2]}")'
+        self.cur.execute(request.format(data))
+        self.conn.commit()
+
     def edit(self,rowtoedit,data):
         request = 'UPDATE strains SET Experimentator="{0[0]}", Box="{0[1]}", Tube="{0[2]}", Strain="{0[3]}",' \
                   'Genome="{0[4]}", Plasmid="{0[5]}",Antibiotics="{0[6]}", Date="{0[7]}", Notes="{0[8]}",' \
@@ -244,10 +256,16 @@ class DB(object):
         return list(self.cur)
 
 
-class AskAdmin(Gtk.Window):
-    def __init__(self, parent):
-        Gtk.Window.__init__(self, title="Admin rights required")
+class AskLogin(Gtk.Window):
+    def __init__(self, parent, after_login, if_login_quit=None, admin=False):
+        Gtk.Window.__init__(self)
+        if admin:
+            self.set_title("Admin rights required")
+        else:
+            self.set_title("Login required")
         self.parent = parent
+        self.after_login = after_login
+        self.if_login_quit = if_login_quit
         self.connect("key-press-event",self.on_key_press)
         self.set_resizable(False)
         self.set_default_size(200, 200)
@@ -257,39 +275,52 @@ class AskAdmin(Gtk.Window):
         self.add(grid)
         self.set_position(Gtk.WindowPosition.CENTER)
 
+        self.entry_user = Gtk.Entry()
         self.entry_pwd = Gtk.Entry(visibility=False)
+        if admin:
+            self.entry_user.set_text("admin")
+            self.entry_user.set_property("editable", False)
 
         button_ok = Gtk.Button(self,stock='gtk-ok')
         button_ok.connect('clicked',self.ok)
         button_cancel = Gtk.Button(self,stock='gtk-cancel')
         button_cancel.connect('clicked',self.quit)
 
-        grid.add(self.entry_pwd)
-        grid.attach_next_to(button_ok, self.entry_pwd, Gtk.PositionType.BOTTOM, 1, 1)
+        grid.add(button_ok)
         grid.attach_next_to(button_cancel, button_ok, Gtk.PositionType.RIGHT, 1, 1)
+        grid.attach_next_to(self.entry_pwd, button_ok, Gtk.PositionType.TOP, 2, 1)
+        grid.attach_next_to(self.entry_user, self.entry_pwd, Gtk.PositionType.TOP, 2, 1)
+
+        if admin:
+            self.entry_pwd.grab_focus()
 
     def ok(self, *args):
         self.db = DB()
-        admin_password = ""
+        password = ""
+        login_user = self.entry_user.get_text()
+        login_password = self.entry_pwd.get_text()
         users_list = self.db.read_users()
         for user in users_list:
-            if user[0] == 'admin':
-                admin_password = user[2]
-        if Glob.encrypt(self.entry_pwd.get_text()) == admin_password:
-            Glob.isadmin = True
-            Error(None, "Ok, you are now admin!")
+            if user[0] == login_user:
+                password = user[2]
+        if Glob.encrypt(login_password) == password:
+            Glob.user = "admin"
+            Error(None, "You are now logged as " + login_user)
+            self.after_login()
             self.quit()
         else:
-            Error(None, "Invalid admin password.")
+            Error(None, "Invalid user/password.")
+        self.db.close()
 
     def on_key_press(self,widget,event):
         if event.keyval == 65293 or event.keyval == 65421:
             self.ok()
         if event.keyval == 65307:
+            if self.if_login_quit:
+                self.if_login_quit()
             self.quit(self)
 
     def quit(self, *args):
-        self.db.close()
         self.hide()
 
 
@@ -303,8 +334,7 @@ class StrainBook(Gtk.Window):
         self.grid = Gtk.Grid()
         self.add(self.grid)
         self.set_position(Gtk.WindowPosition.CENTER)
-        self.spinner = Gtk.Spinner()
-        
+
         scroll = Gtk.ScrolledWindow()
         scroll.set_min_content_width(700)
         scroll.set_min_content_height(400)
@@ -329,9 +359,8 @@ class StrainBook(Gtk.Window):
         self.treeview.connect("button-press-event",self.on_treeview_click)
         
         self.grid.attach_next_to(scroll,self.menu,Gtk.PositionType.BOTTOM,1,1)
-        self.grid.attach_next_to(self.spinner,self.menu,Gtk.PositionType.RIGHT,1,1)
 
-        if not self.db.error:
+        if not Glob.db.error:
             self.init_treeview()
             self.refresh()
             self.backup()
@@ -343,7 +372,7 @@ class StrainBook(Gtk.Window):
             columntitle = Gtk.TreeViewColumn(Glob.headers[i][0], self.renderer_text, text=i)
             columntitle.set_alignment(0.5)    # 0 = left, 0.5 = center, 1 = right
             self.treeview.append_column(columntitle)
-            i=i+1
+            i += 1
     
     def backup(self):
         
@@ -396,39 +425,50 @@ class StrainBook(Gtk.Window):
         dialog_open.destroy()
         
     def init_db(self):
-        self.db = DB()
-        if not self.db.error:
-            self.db.test_write()
+        Glob.db = DB()
+        if not Glob.db.error:
+            Glob.db.test_write()
         
-    def refresh(self,filter=None,data=None):
+    def refresh(self,filter_=None,data=None):
         self.liststore.clear()
-        if not self.db.error:
-            if filter == "complex" and len(data) != 0:
-                for row in self.db.filter(data):
+        if not Glob.db.error:
+            self.set_title("Pystrains: " + Glob.dbfile.split('/')[-1])
+
+            if filter_ == "complex" and len(data) != 0:
+                for row in Glob.db.filter(data):
                     # Transform tuple into list to make it editable
                     row = list(row)
                     # Format sequencing results and add the row
-                    if row[10] == 0: row[10] = ""
-                    if row[10] == 1: row[10] = "Passed"
-                    if row[10] == -1: row[10] = "Failed"
+                    if row[10] == 0:
+                        row[10] = ""
+                    if row[10] == 1:
+                        row[10] = "Passed"
+                    if row[10] == -1:
+                        row[10] = "Failed"
                     self.liststore.append(row)
-            elif filter == "quick":
-                for row in self.db.quick_filter(data):
+            elif filter_ == "quick":
+                for row in Glob.db.quick_filter(data):
                     # Transform tuple into list to make it editable
                     row = list(row)
                     # Format sequencing results and add the row
-                    if row[10] == 0: row[10] = ""
-                    if row[10] == 1: row[10] = "Passed"
-                    if row[10] == -1: row[10] = "Failed"
+                    if row[10] == 0:
+                        row[10] = ""
+                    if row[10] == 1:
+                        row[10] = "Passed"
+                    if row[10] == -1:
+                        row[10] = "Failed"
                     self.liststore.append(row)
             else:
-                for row in self.db.read():
+                for row in Glob.db.read():
                     # Transform tuple into list to make it editable
                     row = list(row)
                     # Format sequencing results and add the row
-                    if row[10] == 0: row[10] = ""
-                    if row[10] == 1: row[10] = "Passed"
-                    if row[10] == -1: row[10] = "Failed"
+                    if row[10] == 0:
+                        row[10] = ""
+                    if row[10] == 1:
+                        row[10] = "Passed"
+                    if row[10] == -1:
+                        row[10] = "Failed"
                     self.liststore.append(row)
             
     def make_menu(self):
@@ -602,7 +642,7 @@ class StrainBook(Gtk.Window):
             newdbfile = dialog_save.get_filename()
             if newdbfile[-3:] != 'sq3': newdbfile += '.sq3'
             try:
-                self.db.create(newdbfile)
+                Glob.db.create(newdbfile)
             except:
                 Error(self,"Could not create new database file. Check that you are allowed to write in\n"
                            + os.path.dirname(newdbfile) + ".")
@@ -640,35 +680,28 @@ class StrainBook(Gtk.Window):
     
     def copy_entry(self,parent):
         if Glob.write_permission == 1:
-            self.spinner.start()
             model,row = self.treeview.get_selection().get_selected()
             data = []
             for cell in model[row]:
                 data.append(cell)
             del data[0]
             self.create(data)
-            self.spinner.stop()
         else:
             Error(self,"Cannot copy strains in read-only mode.")
         
     def edit_entry(self,rowtoedit,data):
-        self.spinner.start()
-        self.db.edit(rowtoedit,data)
+        Glob.db.edit(rowtoedit,data)
         self.refresh()
-        self.spinner.stop()
 
     def create(self,data):
-        self.spinner.start()
-        strainnumber = self.db.read_max() + 1
-        self.db.insert(strainnumber,data)
+        strainnumber = Glob.db.read_max() + 1
+        Glob.db.insert(strainnumber,data)
+        print(data)
         self.refresh()
-        self.spinner.stop()
-        
+
     def create_whowhere(self,who,where):
         if Glob.write_permission == 1:
-            self.spinner.start()
-            self.db.insert_whowhere(who,where)
-            self.spinner.stop()
+            Glob.db.insert_whowhere(who,where)
         else:
             Error(self,"Cannot create new entry in read-only mode.")
     
@@ -677,13 +710,12 @@ class StrainBook(Gtk.Window):
         
     def import_(self,importlist):
         for row in importlist:
-            strainnumber = self.db.read_max() + 1
-            self.db.insert(strainnumber,row)
+            strainnumber = Glob.db.read_max() + 1
+            Glob.db.insert(strainnumber,row)
         self.refresh()
         
     def del_entry(self,parent):
         if Glob.write_permission == 1:
-            self.spinner.start()
             model,row = self.treeview.get_selection().get_selected()
             if row is not None:
                 dialog_sure = Gtk.MessageDialog(self,Gtk.DialogFlags.DESTROY_WITH_PARENT,Gtk.MessageType.QUESTION,
@@ -691,20 +723,19 @@ class StrainBook(Gtk.Window):
                                                 + str(model[row][0]) + "?")
                 choice_sure = dialog_sure.run()
                 if choice_sure == Gtk.ResponseType.YES:
-                    self.db.del_(model[row][0])
+                    Glob.db.del_(model[row][0])
                     self.refresh()
                     dialog_sure.destroy()
                 elif choice_sure == Gtk.ResponseType.NO:
                     dialog_sure.destroy()    
             else:
                 Error(self,"Please select an entry to delete")
-            self.spinner.stop()
         else:
             Error(self,"Cannot delete strains in read-only mode")
         
     def del_batch(self,dellist):
         for delitem in dellist:
-            self.db.del_(delitem)
+            Glob.db.del_(delitem)
     
     def show_delbatch(self,parent):
         if Glob.write_permission == 1:
@@ -760,15 +791,13 @@ class StrainBook(Gtk.Window):
         userswin.show_all()
         
     def filter(self,parent,data):
-        self.spinner.start()
-        self.refresh(filter="complex",data=data)
-        self.spinner.stop()
-    
+        self.refresh(filter_="complex",data=data)
+
     def quit(self, *args):
-        if not self.db.error:
+        if not Glob.db.error:
             try:
-                self.db.cur.close()
-                self.db.conn.close()
+                Glob.db.cur.close()
+                Glob.db.conn.close()
             except:
                 pass
             finally:
@@ -818,15 +847,19 @@ class UsersList(Gtk.Window):
 
     def fill_list(self):
         self.liststore.clear()
-        if not self.parent.db.error:
-            for row in self.parent.db.read_users():
+        if not Glob.db.error:
+            for row in Glob.db.read_users():
                 self.liststore.append(row)
 
+    def send_to_create(self, request):
+        pass
+
     def on_create_click(self, *args):
-        if Glob.isadmin:
-            print("OK, you are admin!")
+        if Glob.user == "admin":
+            newuser = CreateUser(self)
+            newuser.show_all()
         else:
-            askadmin = AskAdmin(self)
+            askadmin = AskLogin(self, self.on_create_click, admin=True)
             askadmin.show_all()
 
     def on_treeview_click(self, widget=None, event=None):
@@ -835,6 +868,49 @@ class UsersList(Gtk.Window):
     def on_key_press(self,widget,event):
         if event.keyval == 65307:
             self.quit(self)
+
+    def quit(self, *args):
+        self.hide()
+
+
+class CreateUser(Gtk.Window):
+    def __init__(self,parent):
+        Gtk.Window.__init__(self, title="Create new user")
+        self.parent = parent
+        self.connect("key-press-event",self.on_key_press)
+        self.set_resizable(False)
+        self.set_default_size(200, 200)
+
+        grid = Gtk.Grid()
+        self.add(grid)
+        self.set_position(Gtk.WindowPosition.CENTER)
+
+        self.entry_user = Gtk.Entry()
+        self.entry_rights = Gtk.Entry()
+        self.entry_password = Gtk.Entry()
+
+        button_ok = Gtk.Button('OK')
+        button_ok.connect('clicked', self.on_ok_click)
+        button_cancel = Gtk.Button('Cancel')
+        button_cancel.connect('clicked', self.quit)
+
+        grid.add(button_ok)
+        grid.attach_next_to(button_cancel, button_ok, Gtk.PositionType.RIGHT, 1, 1)
+        grid.attach_next_to(self.entry_password, button_ok, Gtk.PositionType.TOP, 2, 1)
+        grid.attach_next_to(self.entry_rights, self.entry_password, Gtk.PositionType.TOP, 2, 1)
+        grid.attach_next_to(self.entry_user, self.entry_rights, Gtk.PositionType.TOP, 2, 1)
+
+    def on_ok_click(self, *args):
+        Glob.db.insert_user([self.entry_user.get_text(), self.entry_rights.get_text(),
+                             Glob.encrypt(self.entry_password.get_text())])
+        self.parent.fill_list()
+        self.quit()
+
+    def on_key_press(self,widget,event):
+        if event.keyval == 65307:
+            self.quit(self)
+        if event.keyval == 65293 or event.keyval == 65421:
+            self.on_ok_click()
 
     def quit(self, *args):
         self.hide()
@@ -921,7 +997,7 @@ class WhoIsWhere(Gtk.Window):
                                             + '"' + str(model[row][0]) + '"' + "?")
             choice_sure = dialog_sure.run()
             if choice_sure == Gtk.ResponseType.YES:
-                self.parent.db.del_whowhere(model[row][1])
+                Glob.db.del_whowhere(model[row][1])
                 self.refresh()
                 dialog_sure.destroy()
             elif choice_sure == Gtk.ResponseType.NO:
@@ -931,8 +1007,8 @@ class WhoIsWhere(Gtk.Window):
     
     def refresh(self):
         self.liststore.clear()
-        if not self.parent.db.error:
-            for row in self.parent.db.read_who_where():
+        if not Glob.db.error:
+            for row in Glob.db.read_who_where():
                 self.liststore.append(row)
     
     def on_key_press(self,widget,event):
@@ -1185,7 +1261,7 @@ class QuickFilter(Gtk.Window):
 
     def sendto_quickfilter(self, widget=None):
         data = self.entry_query.get_text().split()
-        self.parent.refresh(filter="quick",data=data)
+        self.parent.refresh(filter_="quick",data=data)
 
     def reset(self, widget=None):
         self.parent.refresh()
@@ -1507,7 +1583,7 @@ class Settings(Gtk.Window):
             dialog_open.destroy()
         dialog_open.destroy()
         
-    def ok(self,event=None):
+    def ok(self,*args):
         if self.dbfile_entry.get_text() != '':
             Glob.set_var('dbfile',self.dbfile_entry.get_text())
             self.parent.init_db()
@@ -1518,7 +1594,8 @@ class Settings(Gtk.Window):
         self.quit()
     
     def on_key_press(self,widget,event):
-        if event.keyval == 65307:self.quit()
+        if event.keyval == 65307:
+            self.quit()
         
     def quit(self, *args):
         self.hide()
@@ -1534,8 +1611,8 @@ class DelBatch(Gtk.Window):
         self.set_position(Gtk.WindowPosition.MOUSE)
         self.connect("key-press-event",self.on_key_press)
 
-        self.max = self.parent.db.read_max()
-        self.min = self.parent.db.read_min()
+        self.max = Glob.db.read_max()
+        self.min = Glob.db.read_min()
         
         self.entry_from = Gtk.Entry()
         self.entry_from.set_placeholder_text("min=" + str(self.min))
@@ -1628,8 +1705,8 @@ class FirstRun(Gtk.Window):
             self.conn = sqlite3.connect(newdbfile)
             self.cur = self.conn.cursor()
             
-            request = 'CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER,' \
-                      'STRAIN TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT' \
+            request = 'CREATE TABLE strains (StrainNumber INTEGER, Experimentator TEXT, Box INTEGER, Tube INTEGER, ' \
+                      'STRAIN TEXT, Genome TEXT, Plasmid TEXT, Antibiotics TEXT, Date TEXT, Notes TEXT, ' \
                       'Sequenced INTEGER)'
             self.cur.execute(request)
             request = 'CREATE TABLE who_is_where (Who TEXT, IsWhere TEXT)'
@@ -1733,33 +1810,36 @@ class AdminPassword(Gtk.Window):
 
 def main():
     try:
-        f = open('.pystrains.conf')
-        line = f.readline()
-        f.close()
-        dbfile = line.split()        # Because line ends with a \n we do not want
-        Glob.dbfile = dbfile[0]
+        Glob.locate_db()
         f = open(Glob.dbfile)
     except FileNotFoundError:
         firstrun = FirstRun()
         firstrun.connect('delete-event',firstrun.quit)
         firstrun.show_all()
         Gtk.main()
-    except error:
-        print("Error: ", error)
     else:
         Glob.locate_db()
-        mainwin = StrainBook()
-        mainwin.connect("delete-event", mainwin.quit)
-        mainwin.show_all()
+        login = AskLogin(None,launch,if_login_quit=Gtk.main_quit)
+        login.show_all()
         Gtk.main()
     finally:
         return 0
+
     # Glob.LocateDB()
     # win = StrainBook()
     # win.connect("delete-event", win.Quit)
     # win.show_all()
     # Gtk.main()
     # return 0
+
+
+def launch():
+    print("Launching")
+    Glob.locate_db()
+    mainwin = StrainBook()
+    mainwin.connect("delete-event", mainwin.quit)
+    mainwin.show_all()
+
 
 if __name__ == '__main__':
     main()
